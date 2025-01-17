@@ -2,7 +2,8 @@
 
 This project is a basic 3D sculpting editor built using Three.js. It allows users to manipulate a 3D sphere mesh using various sculpting tools, adjust brush settings, apply symmetry, and import/export models in OBJ and STL formats.
 
----
+![image](https://github.com/user-attachments/assets/680a9715-191e-47cd-b7a3-82dfd11a7bd1)
+
 
 ## **Key Features**
 
