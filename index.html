@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three/examples/js/loaders/OBJLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three/examples/js/exporters/OBJExporter.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three/examples/js/exporters/STLExporter.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three/examples/js/loaders/GLTFLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three/examples/js/exporters/GLTFExporter.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three/examples/js/controls/OrbitControls.js"></script>
+    <title>Advanced Three.js Sculpting Editor</title>
+    <style>
+        body { margin: 0; }
+        #canvas-container { width: 100%; height: 100vh; }
+        #ui {
+          position: absolute;
+          top: 10px;
+          left: 10px;
+          background: rgba(255, 255, 255, 0.8);
+          padding: 10px;
+          border-radius: 5px;
+          font-family: Arial, sans-serif;
+        }
+        #ui button, #ui select, #ui input { margin: 5px; }
+      </style>
+    </head>
+    <body>
+      <div id="canvas-container"></div>
+      <div id="ui">
+        <label>Brush Type:
+          <select id="brushType">
+            <option value="push">Push/Pull</option>
+            <option value="inflate">Inflate/Deflate</option>
+          </select>
+        </label>
+        <label>Brush Size: <input type="range" id="brushSize" min="0.1" max="1" step="0.1" value="0.5"></label>
+        <label>Brush Strength: <input type="range" id="brushStrength" min="0.1" max="1" step="0.1" value="0.5"></label>
+        <label><input type="checkbox" id="symmetryVertical"> Vertical Symmetry</label>
+        <label><input type="checkbox" id="symmetryHorizontal"> Horizontal Symmetry</label>
+        <button id="smoothButton">Smooth</button>
+        <button id="undoButton">Undo</button>
+        <button id="redoButton">Redo</button>
+        <button id="importButton">Import OBJ/STL</button>
+        <button id="exportButton">Export OBJ</button>
+      </div>
+      
+      <script>
+        let scene, camera, renderer, mesh, raycaster, mouse, controls;
+        let brushSize = 0.5, brushStrength = 0.5;
+        let brushType = 'push';
+        let isSymmetryVertical = false, isSymmetryHorizontal = false;
+        let history = [], historyIndex = -1;
+    
+        init();
+        animate();
+    
+        function init() {
+          // Scene
+          scene = new THREE.Scene();
+    
+          // Camera
+          camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+          camera.position.z = 5;
+    
+          // Renderer
+          const container = document.getElementById('canvas-container');
+          renderer = new THREE.WebGLRenderer({ antialias: true });
+          renderer.setSize(container.clientWidth, container.clientHeight);
+          container.appendChild(renderer.domElement);
+    
+          // OrbitControls
+          controls = new THREE.OrbitControls(camera, renderer.domElement);
+          controls.enableZoom = true;
+          controls.enableRotate = true;
+          controls.enablePan = true;
+    
+          // Light
+          const light = new THREE.DirectionalLight(0xffffff, 1);
+          light.position.set(1, 1, 1).normalize();
+          scene.add(light);
+    
+          // Add linear fog
+    scene.fog = new THREE.Fog(0xcccccc, 1, 100);
+    
+          // Geometry
+          const geometry = new THREE.SphereGeometry(1, 32, 32);
+          const material = new THREE.MeshPhongMaterial({ color: 0x00ff00, flatShading: true });
+          mesh = new THREE.Mesh(geometry, material);
+          scene.add(mesh);
+    
+          // Raycaster and Mouse
+          raycaster = new THREE.Raycaster();
+          mouse = new THREE.Vector2();
+    
+          // Event Listeners
+          window.addEventListener('mousemove', onMouseMove);
+          window.addEventListener('mousedown', onMouseDown);
+          window.addEventListener('resize', onWindowResize);
+          document.getElementById('brushSize').addEventListener('input', (e) => brushSize = parseFloat(e.target.value));
+          document.getElementById('brushStrength').addEventListener('input', (e) => brushStrength = parseFloat(e.target.value));
+          document.getElementById('brushType').addEventListener('change', (e) => brushType = e.target.value);
+          document.getElementById('symmetryVertical').addEventListener('change', (e) => isSymmetryVertical = e.target.checked);
+          document.getElementById('symmetryHorizontal').addEventListener('change', (e) => isSymmetryHorizontal = e.target.checked);
+          document.getElementById('smoothButton').addEventListener('click', smoothMesh);
+          document.getElementById('undoButton').addEventListener('click', undo);
+          document.getElementById('redoButton').addEventListener('click', redo);
+          document.getElementById('importButton').addEventListener('click', importModel);
+          document.getElementById('exportButton').addEventListener('click', exportModel);
+        }
+    
+        function animate() {
+          requestAnimationFrame(animate);
+          controls.update(); // Required for OrbitControls
+          renderer.render(scene, camera);
+        }
+    
+        function onMouseMove(event) {
+          mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+          mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+        }
+    
+        function onMouseDown(event) {
+          if (event.button === 2) { // Right mouse button for sculpting
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObject(mesh);
+    
+            if (intersects.length > 0) {
+              saveState();
+              const point = intersects[0].point;
+              const vertices = mesh.geometry.attributes.position.array;
+              const face = intersects[0].face;
+    
+              // Sculpting
+              for (let i = 0; i < 3; i++) {
+                const vertexIndex = face.a + i;
+                sculptVertex(vertices, vertexIndex, point);
+    
+                // Apply symmetry
+                if (isSymmetryVertical) {
+                  const mirroredVertexIndex = findMirroredVertex(vertices, vertexIndex, 'vertical');
+                  if (mirroredVertexIndex !== -1) sculptVertex(vertices, mirroredVertexIndex, point);
+                }
+                if (isSymmetryHorizontal) {
+                  const mirroredVertexIndex = findMirroredVertex(vertices, vertexIndex, 'horizontal');
+                  if (mirroredVertexIndex !== -1) sculptVertex(vertices, mirroredVertexIndex, point);
+                }
+              }
+    
+              mesh.geometry.attributes.position.needsUpdate = true;
+              mesh.geometry.computeVertexNormals();
+            }
+          }
+        }
+    
+        function sculptVertex(vertices, vertexIndex, point) {
+          const vertex = new THREE.Vector3(
+            vertices[vertexIndex * 3],
+            vertices[vertexIndex * 3 + 1],
+            vertices[vertexIndex * 3 + 2]
+          );
+    
+          const direction = vertex.clone().sub(point).normalize();
+          if (brushType === 'push') {
+            vertex.add(direction.multiplyScalar(brushStrength));
+          } else if (brushType === 'inflate') {
+            vertex.add(vertex.clone().normalize().multiplyScalar(brushStrength));
+          }
+    
+          vertices[vertexIndex * 3] = vertex.x;
+          vertices[vertexIndex * 3 + 1] = vertex.y;
+          vertices[vertexIndex * 3 + 2] = vertex.z;
+        }
+    
+        function findMirroredVertex(vertices, vertexIndex, axis) {
+          const x = vertices[vertexIndex * 3];
+          const y = vertices[vertexIndex * 3 + 1];
+          const z = vertices[vertexIndex * 3 + 2];
+    
+          for (let i = 0; i < vertices.length / 3; i++) {
+            if (axis === 'vertical' && Math.abs(vertices[i * 3] + x) < 0.01 && Math.abs(vertices[i * 3 + 1] - y) < 0.01 && Math.abs(vertices[i * 3 + 2] - z) < 0.01) {
+              return i;
+            }
+            if (axis === 'horizontal' && Math.abs(vertices[i * 3] - x) < 0.01 && Math.abs(vertices[i * 3 + 1] + y) < 0.01 && Math.abs(vertices[i * 3 + 2] - z) < 0.01) {
+              return i;
+            }
+          }
+          return -1;
+        }
+    
+        function smoothMesh() {
+          saveState();
+          const vertices = mesh.geometry.attributes.position.array;
+          const newVertices = new Float32Array(vertices.length);
+    
+          for (let i = 0; i < vertices.length; i += 3) {
+            const x = vertices[i];
+            const y = vertices[i + 1];
+            const z = vertices[i + 2];
+            newVertices[i] = x * 0.9 + (vertices[(i + 3) % vertices.length] + vertices[(i - 3 + vertices.length) % vertices.length]) * 0.05;
+            newVertices[i + 1] = y * 0.9 + (vertices[(i + 4) % vertices.length] + vertices[(i - 2 + vertices.length) % vertices.length]) * 0.05;
+            newVertices[i + 2] = z * 0.9 + (vertices[(i + 5) % vertices.length] + vertices[(i - 1 + vertices.length) % vertices.length]) * 0.05;
+          }
+    
+          mesh.geometry.setAttribute('position', new THREE.BufferAttribute(newVertices, 3));
+          mesh.geometry.attributes.position.needsUpdate = true;
+          mesh.geometry.computeVertexNormals();
+        }
+    
+        function saveState() {
+          const vertices = mesh.geometry.attributes.position.array;
+          history = history.slice(0, historyIndex + 1);
+          history.push(new Float32Array(vertices));
+          historyIndex++;
+        }
+    
+        function undo() {
+          if (historyIndex > 0) {
+            historyIndex--;
+            const vertices = history[historyIndex];
+            mesh.geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+            mesh.geometry.attributes.position.needsUpdate = true;
+            mesh.geometry.computeVertexNormals();
+          }
+        }
+    
+        function redo() {
+          if (historyIndex < history.length - 1) {
+            historyIndex++;
+            const vertices = history[historyIndex];
+            mesh.geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+            mesh.geometry.attributes.position.needsUpdate = true;
+            mesh.geometry.computeVertexNormals();
+          }
+        }
+    
+        function importModel() {
+          const input = document.createElement('input');
+          input.type = 'file';
+          input.accept = '.obj,.stl';
+          input.onchange = (e) => {
+            const file = e.target.files[0];
+            const reader = new FileReader();
+            reader.onload = (event) => {
+              if (file.name.endsWith('.obj')) {
+                const loader = new THREE.OBJLoader();
+                const model = loader.parse(event.target.result);
+                scene.add(model);
+              } else if (file.name.endsWith('.stl')) {
+                const loader = new THREE.STLLoader();
+                const geometry = loader.parse(event.target.result);
+                const material = new THREE.MeshPhongMaterial({ color: 0x00ff00, flatShading: true });
+                const model = new THREE.Mesh(geometry, material);
+                scene.add(model);
+              }
+            };
+            reader.readAsText(file);
+          };
+          input.click();
+        }
+    
+        function exportModel() {
+          const exporter = new THREE.OBJExporter();
+          const result = exporter.parse(mesh);
+          const blob = new Blob([result], { type: 'text/plain' });
+          const link = document.createElement('a');
+          link.href = URL.createObjectURL(blob);
+          link.download = 'model.obj';
+          link.click();
+        }
+    
+        function onWindowResize() {
+          camera.aspect = window.innerWidth / window.innerHeight;
+          camera.updateProjectionMatrix();
+          renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+      </script>
+    </body>
+    </html>
